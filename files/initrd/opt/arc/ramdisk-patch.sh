@@ -213,6 +213,7 @@ if [ -f "${USER_GRUB_CONFIG}" ] && [ -f "${USER_CONFIG_FILE}" ] && [ -f "${ORI_Z
     mkdir -p "${BACKUP_PATH}/p1"
     cp -rf "${PART1_PATH}/." "${BACKUP_PATH}/p1/"
     rm -f "${BACKUP_PATH}/p1/ARC-VERSION" "${BACKUP_PATH}/p1/ARC-BUILD"
+    rm -f "${BACKUP_PATH}/p1/boot/grub/grub.cfg"
   fi
   if [ -d "${PART2_PATH}" ]; then
     mkdir -p "${BACKUP_PATH}/p2"

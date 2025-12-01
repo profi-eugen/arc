@@ -69,7 +69,6 @@ USBMOUNT="$(readConfigKey "usbmount" "${USER_CONFIG_FILE}")"
 HDDSORT="$(readConfigKey "hddsort" "${USER_CONFIG_FILE}")"
 BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
 ARC_PATCH="$(readConfigKey "arc.patch" "${USER_CONFIG_FILE}")"
-ALTCONSOLE="$(readConfigKey "arc.altconsole" "${USER_CONFIG_FILE}")"
 
 # Build Sanity Check
 if [ "${BUILDDONE}" = "false" ]; then
@@ -208,11 +207,7 @@ CMDLINE['HddHotplug']="1"
 CMDLINE['vender_format_version']="2"
 CMDLINE['skip_vender_mac_interfaces']="0,1,2,3,4,5,6,7"
 CMDLINE['earlyprintk']=""
-if [ "${ALTCONSOLE}" = "true" ]; then
-  CMDLINE['earlycon']="uart8250,io,0x3e8,115200n8"
-else
-  CMDLINE['earlycon']="uart8250,io,0x3f8,115200n8"
-fi
+CMDLINE['earlycon']="uart8250,io,0x3f8,115200n8"
 CMDLINE['console']="ttyS0,115200n8"
 CMDLINE['consoleblank']="600"
 CMDLINE['root']="/dev/md0"
