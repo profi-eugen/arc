@@ -75,13 +75,15 @@ writeConfigKey "buildnum" "${BUILDNUM}" "${USER_CONFIG_FILE}"
 writeConfigKey "smallnum" "${SMALLNUM}" "${USER_CONFIG_FILE}"
 
 # PAT Data
-for SUFFIX in {1..0}; do
-  PAT_KEY="${PRODUCTVER}-${BUILDNUM}-${SUFFIX}"
-  PAT_URL_UPDATE="$(readConfigKey "${PLATFORM}.\"${MODEL}\".\"${PAT_KEY}\".url" "${D_FILE}")"
-  PAT_HASH_UPDATE="$(readConfigKey "${PLATFORM}.\"${MODEL}\".\"${PAT_KEY}\".hash" "${D_FILE}")"
-  if [ -n "${PAT_URL_UPDATE}" ] && [ -n "${PAT_HASH_UPDATE}" ]; then
-    break
-  fi
+for SUBVER in {0..9}; do
+  for SUFFIX in {2..0}; do
+    PAT_KEY="${PRODUCTVER}.${SUBVER}-${BUILDNUM}-${SUFFIX}"
+    PAT_URL_UPDATE="$(readConfigKey "${PLATFORM}.\"${MODEL}\".\"${PAT_KEY}\".url" "${D_FILE}")"
+    PAT_HASH_UPDATE="$(readConfigKey "${PLATFORM}.\"${MODEL}\".\"${PAT_KEY}\".hash" "${D_FILE}")"
+    if [ -n "${PAT_URL_UPDATE}" ] && [ -n "${PAT_HASH_UPDATE}" ]; then
+      break 2
+    fi
+  done
 done
 if [ -z "${PAT_URL_UPDATE}" ] || [ -z "${PAT_HASH_UPDATE}" ]; then
   echo -e "\nError: No valid PAT Data found for ${PRODUCTVER}-${BUILDNUM}.\nPlease update your ModelDB."
