@@ -33,7 +33,7 @@ getOffline "files/p3/configs"
 case "${1}" in
   evo) getBuildroot "${1}" "br" ;;
   essential) getBuildroot "${1}" "br" ;;
-  local) echo "Building local image" ;;
+  local) cp -f br/rootfs.cpio.zst br/initrd-arc && cp -f br/bzImage br/bzImage-arc;;
   *) echo "Invalid option specified" ;;
 esac
 
