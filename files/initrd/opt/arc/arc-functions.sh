@@ -1684,7 +1684,7 @@ function sysinfo() {
   TEXT="\n\Z4> System: ${MEV} | ${BOOTSYS} | ${BUS}\Zn"
   TEXT+="\n"
   TEXT+="\n  Board: \Zb${BOARD}\Zn"
-  TEXT+="\n  CPU: \Zb${CPU} (Cores: ${CPUCNT} Threads: ${CPUCHT})\Zn"
+  TEXT+="\n  CPU: \Zb${CPU} (Cores: ${CPUCNT} | Threads: ${CPUCHT})\Zn"
   if [ $(lspci -d ::300 | wc -l) -gt 0 ]; then
     GPUNAME=""
     for PCI in $(lspci -d ::300 | awk '{print $1}'); do

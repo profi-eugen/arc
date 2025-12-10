@@ -99,6 +99,8 @@ function getSysinfo() {
   [ -d /sys/firmware/efi ] && BOOTSYS="UEFI" || BOOTSYS="BIOS"
   USERID="$(readConfigKey "arc.userid" "${USER_CONFIG_FILE}")"
   CPU="$(cat /proc/cpuinfo 2>/dev/null | grep 'model name' | uniq | awk -F':' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  CPUCNT="$(cat /sys/devices/system/cpu/cpu[0-9]*/topology/{core_cpus_list,thread_siblings_list} | sort -u | wc -l 2>/dev/null)"
+  CPUCHT="$(cat /proc/cpuinfo | grep -c 'core id' 2>/dev/null)"
   local b v
   if [ -r /sys/class/dmi/id/product_name ]; then
     b="$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)"
@@ -186,7 +188,7 @@ function getSysinfo() {
   # Print System Informations
   TEXT="\n> System: ${MACHINE} | ${BOOTSYS}"
   TEXT+="\n  Board: ${BOARD}"
-  TEXT+="\n  CPU: ${CPU}"
+  TEXT+="\n  CPU: {CPU} (Cores: ${CPUCNT} | Threads: ${CPUCHT})"
   if [ $(lspci -d ::300 | wc -l) -gt 0 ]; then
     GPUNAME=""
     for PCI in $(lspci -d ::300 | awk '{print $1}'); do
