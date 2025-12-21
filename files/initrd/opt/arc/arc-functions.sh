@@ -1455,12 +1455,12 @@ function backupMenu() {
         MODEL="$(readConfigKey "model" "${USER_CONFIG_FILE}")"
         PRODUCTVER="$(readConfigKey "productver" "${USER_CONFIG_FILE}")"
         if [ -n "${MODEL}" ] && [ -n "${PRODUCTVER}" ]; then
-          TEXT="Config found!\n\nModel: ${MODEL}\nVersion: ${PRODUCTVER}"
+          TEXT="Model: ${MODEL}\nVersion: ${PRODUCTVER}"
           SN="$(readConfigKey "sn" "${USER_CONFIG_FILE}")"
           TEXT+="\nSerial: ${SN}"
           ARC_PATCH="$(readConfigKey "arc.patch" "${USER_CONFIG_FILE}")"
           TEXT+="\nArc Patch: ${ARC_PATCH}"
-          dialog --backtitle "$(backtitle)" --title "Online Restore" \
+          dialog --backtitle "$(backtitle)" --title "Config found" \
             --aspect 18 --msgbox "${TEXT}" 0 0
           PLATFORM="$(readConfigKey "platform" "${USER_CONFIG_FILE}")"
           DT="$(readConfigKey "platforms.${PLATFORM}.dt" "${P_FILE}")"
@@ -3842,7 +3842,7 @@ function recoverDSM() {
     MODEL="$(readConfigKey "model" "${BACKUP_CONFIG}")"
     PRODUCTVER="$(readConfigKey "productver" "${BACKUP_CONFIG}")"
     if [ -n "${MODEL}" ] && [ -n "${PRODUCTVER}" ]; then
-      TEXT="Config found!\n\nModel: ${MODEL}\nVersion: ${PRODUCTVER}"
+      TEXT="Model: ${MODEL}\nVersion: ${PRODUCTVER}"
       PLATFORM="$(readConfigKey "platform" "${BACKUP_CONFIG}")"
       TEXT+="\nPlatform: ${PLATFORM}"
       SN="$(readConfigKey "sn" "${BACKUP_CONFIG}")"
@@ -3852,7 +3852,7 @@ function recoverDSM() {
       KERNEL="$(readConfigKey "kernel" "${BACKUP_CONFIG}")"
       TEXT+="\nKernel: ${KERNEL}"
       CONFDONE="$(readConfigKey "arc.confdone" "${BACKUP_CONFIG}")"
-      dialog --backtitle "$(backtitle)" --title "Restore Arc" \
+      dialog --backtitle "$(backtitle)" --title "Config found" \
         --aspect 18 --msgbox "${TEXT}" 0 0
       [ $? -ne 0 ] && return
       cp -raf "${TMP_PATH}/mdX/usr/arc/backup/p1/"* "${PART1_PATH}" 2>/dev/null
