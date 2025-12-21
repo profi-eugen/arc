@@ -136,7 +136,7 @@ elif [ "${ARC_MODE}" = "config" ]; then
           write_menu_value "g" "Scaling Governor" "${GOVERNOR:-performance}"
         fi
 
-        if [ "${PLATFORM}" = "epyc7002" ] && [ "${PRODUCTVER}" -ge "7.2" ]; then
+        if [ "${PLATFORM}" = "epyc7002" ] && [[ "${PRODUCTVER}" = "7.2" || "${PRODUCTVER}" = "7.3" ]]; then
           write_menu_value "K" "Kernel" "${KERNEL}"
         fi
 

@@ -196,20 +196,43 @@ function arcVersion() {
     CVS="$(readConfigEntriesArray "platforms.${PLATFORM}.productvers" "${P_FILE}")"
     PVS="$(readConfigEntriesArray "${PLATFORM}.\"${MODEL}\"" "${D_FILE}")"
     LVS=""
-    for V in $(echo "${PVS}" | sort -r); do
-      if echo "${CVS}" | grep -qx "${V:0:3}"; then
-        LVS="${LVS}${V} "$'\n'
+    SHOW_ALL=0
+    EXTRA_LABEL="Show all"
+    
+    while true; do
+      LVS=""
+      for V in $(echo "${PVS}" | sort -r); do
+        if echo "${CVS}" | grep -qx "${V:0:3}"; then
+          if [ "${SHOW_ALL}" -eq 1 ] || [[ "${V}" == 7.2.2-* ]]; then
+            LVS="${LVS}${V} "$'\n'
+          fi
+        fi
+      done
+    
+      dialog --clear --no-items --nocancel --title "DSM Version" --backtitle "$(backtitle)" \
+        --extra-button --extra-label "${EXTRA_LABEL}" \
+        --menu "Select DSM Version" 7 30 0 ${LVS} 2>"${TMP_PATH}/resp"
+      RET=$?
+    
+      if [ "${RET}" -eq 3 ]; then
+        SHOW_ALL=$((1 - SHOW_ALL))
+        if [ "${SHOW_ALL}" -eq 1 ]; then
+          EXTRA_LABEL="Show less"
+        else
+          EXTRA_LABEL="Show all"
+        fi
+        continue
       fi
+    
+      [ "${RET}" -ne 0 ] && return 1
+    
+      resp="$(cat "${TMP_PATH}/resp" 2>/dev/null)"
+      if [ "${PRODUCTVER}" != "${resp:0:3}" ]; then
+        PRODUCTVER="${resp:0:3}"
+        rm -f "${ORI_ZIMAGE_FILE}" "${ORI_RDGZ_FILE}" "${MOD_ZIMAGE_FILE}" "${MOD_RDGZ_FILE}" >/dev/null 2>&1 || true
+      fi
+      break
     done
-
-    dialog --clear --no-items --nocancel --title "DSM Version" --backtitle "$(backtitle)" \
-      --no-items --menu "Select DSM Version" 7 30 0 ${LVS} 2>"${TMP_PATH}/resp"
-    [ $? -ne 0 ] && return 1
-    resp="$(cat "${TMP_PATH}/resp" 2>/dev/null)"
-    if [ "${PRODUCTVER}" != "${resp:0:3}" ]; then
-      PRODUCTVER="${resp:0:3}"
-      rm -f "${ORI_ZIMAGE_FILE}" "${ORI_RDGZ_FILE}" "${MOD_ZIMAGE_FILE}" "${MOD_RDGZ_FILE}" >/dev/null 2>&1 || true
-    fi
 
     writeConfigKey "productver" "${PRODUCTVER}" "${USER_CONFIG_FILE}"
     writeConfigKey "buildnum" "" "${USER_CONFIG_FILE}"
@@ -2606,7 +2629,8 @@ function formatDisks() {
       mdadm -S "${I}" >/dev/null 2>&1
     done
   fi
-  for I in ${resp}; do
+  IFS=$'\n' read -r -d '' -a selected_disks <<< "$(echo "${resp}" | tr -d '"')"
+  for I in "${selected_disks[@]}"; do
     umount -l "${I}" 2>/dev/null
     if [[ "${I}" = /dev/mmc* ]]; then
       echo y | mkfs.ext4 -T largefile4 -E nodiscard "${I}"
