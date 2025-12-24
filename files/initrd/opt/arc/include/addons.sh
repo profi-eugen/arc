@@ -1,103 +1,70 @@
-###############################################################################
-# Return list of available addons
+###################################################################################
+# Check if addon is available for platform
+# 1 - Addon
+# 2 - Platform
+function isAddonAvailable() {
+  local ADDON=${1:-}
+  local PLATFORM=${2:-}
+  local MANIFEST="${ADDONS_PATH}/${ADDON}/manifest.yml"
+  [ ! -f "${MANIFEST}" ] && return 1
+  local AVAILABLE=$(readConfigKey "${PLATFORM}" "${MANIFEST}")
+  [ "${AVAILABLE}" = "true" ]
+}
+
+#################################################################################
+# List available addons for a platform
 # 1 - Platform
 function availableAddons() {
-  if [ -z "${1}" ]; then
-    echo ""
-    return 1
-  fi
-  local ARCOFFLINE="$(readConfigKey "arc.offline" "${USER_CONFIG_FILE}")"
-  local ARCCONF="$(readConfigKey "${MODEL}.serial" "${S_FILE}")"
-  for D in $(find "${ADDONS_PATH}" -maxdepth 1 -type d 2>/dev/null | sort); do
+  local PLATFORM=${1:-}
+  [ -z "${PLATFORM}" ] && return 1
+  local MACHINE=$(virt-what 2>/dev/null | head -1)
+  [ -z "${MACHINE}" ] && MACHINE="physical"
+  find "${ADDONS_PATH}" -maxdepth 1 -type d 2>/dev/null | sort | while read -r D; do
     [ ! -f "${D}/manifest.yml" ] && continue
-    local ADDON=$(basename ${D})
-    local AVAILABLE="$(readConfigKey "${1}" "${D}/manifest.yml")"
-    [ "${AVAILABLE}" = false ] && continue
+    local ADDON=$(basename "${D}")
     local SYSTEM=$(readConfigKey "system" "${D}/manifest.yml")
-    [ "${SYSTEM}" = true ] && continue
-    if [[ "${ARCOFFLINE}" = "true" || -z "${ARCCONF}" ]] && [[ "${ADDON}" = "amepatch" || "${ADDON}" = "arcdns" ]]; then
+    [ "${SYSTEM}" = "true" ] && continue
+    isAddonAvailable "${ADDON}" "${PLATFORM}" || continue
+
+    # Special platform/hardware checks
+    if [ "${MACHINE}" != "physical" ] && [[ "${ADDON}" =~ ^(cpufreqscaling|fancontrol|ledcontrol)$ ]]; then
       continue
     fi
-    if [ "${MACHINE}" != "Native" ] && [ "${ADDON}" = "cpufreqscaling" ]; then
-      continue
-    fi
-    if echo "${PAT_URL}" 2>/dev/null | grep -vq "7.2.2"; then
-      if [ "${ADDON}" = "allowdowngrade" ]; then
-        continue
-      fi
-    fi
-    local DESC="$(readConfigKey "description" "${D}/manifest.yml")"
-    local BETA="$(readConfigKey "beta" "${D}/manifest.yml")"
-    local TARGET="$(readConfigKey "target" "${D}/manifest.yml")"
-    [ "${BETA}" = true ] && BETA="(Beta) " || BETA=""
-    if [ "${TARGET}" = "app" ]; then
-      [ "${AVAILABLE}" = true ] && echo -e "${ADDON}\t\Z4${BETA}${DESC}\Zn"
-    elif [ "${TARGET}" = "system" ]; then
-      [ "${AVAILABLE}" = true ] && echo -e "${ADDON}\t\Z1${BETA}${DESC}\Zn"
-    else
-      [ "${AVAILABLE}" = true ] && echo -e "${ADDON}\t${BETA}${DESC}"
-    fi
+
+    local DESC=$(readConfigKey "description" "${D}/manifest.yml")
+    local BETA=$(readConfigKey "beta" "${D}/manifest.yml")
+    case "${BETA}" in
+      false)    echo -e "${ADDON}\t\Z4${DESC}\Zn" ;;
+      true) echo -e "${ADDON}\t\Z1${DESC}\Zn" ;;
+    esac
   done
 }
 
-###############################################################################
-# Check if addon exist
-# 1 - Addon id
-# 2 - Platform
-# Return ERROR if not exists
-function checkAddonExist() {
-  if [ -z "${1}" ] || [ -z "${2}" ]; then
-    return 1 # ERROR
-  fi
-  # First check generic files
-  if [ -f "${ADDONS_PATH}/${1}/all.tgz" ]; then
-    return 0 # OK
-  fi
-  return 1 # ERROR
-}
-
-###############################################################################
+#################################################################################
 # Install Addon into ramdisk image
-# 1 - Addon id
-# Return ERROR if not installed
+# 1 - Addon
+# 2 - Platform
+# 3 - Kernel version
 function installAddon() {
-  if [ -z "${1}" ]; then
-    return 1
-  fi
-  local ADDON="${1}"
-  mkdir -p "${TMP_PATH}/${ADDON}"
+  local ADDON=${1:-}
+  local PLATFORM=${2:-}
+  local KVER=${3:-}
+  [ -z "${ADDON}" ] && echo "ERROR: Addon not defined" && return 1
+  isAddonAvailable "${ADDON}" "${PLATFORM}" || {
+    deleteConfigKey "addon.${ADDON}" "${USER_CONFIG_FILE}"
+    return 0
+  }
+  local TMP_ADDON="${TMP_PATH}/${ADDON}"
+  mkdir -p "${TMP_ADDON}"
   local HAS_FILES=0
-  # First check generic files
-  if [ -f "${ADDONS_PATH}/${ADDON}/all.tgz" ]; then
-    tar -zxf "${ADDONS_PATH}/${ADDON}/all.tgz" -C "${TMP_PATH}/${ADDON}"
-    HAS_FILES=1
-  fi
-  # If has files to copy, copy it, else return error
-  [ ${HAS_FILES} -ne 1 ] && return 1
-  cp -f "${TMP_PATH}/${ADDON}/install.sh" "${RAMDISK_PATH}/addons/${ADDON}.sh" 2>"${LOG_FILE}"
-  chmod +x "${RAMDISK_PATH}/addons/${ADDON}.sh"
-  [ -d ${TMP_PATH}/${ADDON}/root ] && (cp -rnf "${TMP_PATH}/${ADDON}/root/"* "${RAMDISK_PATH}/" 2>"${LOG_FILE}")
-  rm -rf "${TMP_PATH}/${ADDON}"
+  for TGZ in "${ADDONS_PATH}/${ADDON}/all.tgz" "${ADDONS_PATH}/${ADDON}/${PLATFORM}-${KVER}.tgz"; do
+    [ -f "${TGZ}" ] && tar -zxf "${TGZ}" -C "${TMP_ADDON}" 2>>"${LOG_FILE}" && HAS_FILES=1
+  done
+  [ "${HAS_FILES}" -ne 1 ] && deleteConfigKey "addon.${ADDON}" "${USER_CONFIG_FILE}" && rm -rf "${TMP_ADDON}" && return 0
+  [ -f "${TMP_ADDON}/install.sh" ] && cp -f "${TMP_ADDON}/install.sh" "${RAMDISK_PATH}/addons/${ADDON}.sh" 2>>"${LOG_FILE}" && chmod +x "${RAMDISK_PATH}/addons/${ADDON}.sh"
+  [ -d "${TMP_ADDON}/root" ] && cp -rnf "${TMP_ADDON}/root/"* "${RAMDISK_PATH}/" 2>>"${LOG_FILE}"
+  rm -rf "${TMP_ADDON}"
   return 0
-}
-
-###############################################################################
-# Untar an addon to correct path
-# 1 - Addon file path
-# Return name of addon on sucess or empty on error
-function untarAddon() {
-  if [ -z "${1}" ]; then
-    echo ""
-    return 1
-  fi
-  rm -rf "${TMP_PATH}/addon"
-  mkdir -p "${TMP_PATH}/addon"
-  tar -xaf "${1}" -C "${TMP_PATH}/addon" || return
-  local ADDON=$(readConfigKey "name" "${TMP_PATH}/addon/manifest.yml")
-  [ -z "${ADDON}" ] && return
-  rm -rf "${ADDONS_PATH}/${ADDON}"
-  mv -f "${TMP_PATH}/addon" "${ADDONS_PATH}/${ADDON}"
-  echo "${ADDON}"
 }
 
 ###############################################################################
@@ -107,8 +74,23 @@ function updateAddon() {
     local ADDON=$(basename "${F}" | sed 's|.addon||')
     rm -rf "${ADDONS_PATH}/${ADDON}"
     mkdir -p "${ADDONS_PATH}/${ADDON}"
-    echo "Installing ${F} to ${ADDONS_PATH}/${ADDON}"
-    tar -xaf "${F}" -C "${ADDONS_PATH}/${ADDON}"
+    tar -zxf "${F}" -C "${ADDONS_PATH}/${ADDON}"
     rm -f "${F}"
   done
+}
+
+###############################################################################
+# Read Addon Key
+# 1 - Addon
+# 2 - key
+function readAddonKey() {
+  if [ -z "${1}" ] || [ -z "${2}" ]; then
+    echo ""
+    return 1
+  fi
+  if [ ! -f "${ADDONS_PATH}/${1}/manifest.yml" ]; then
+    echo ""
+    return 1
+  fi
+  readConfigKey "${2}" "${ADDONS_PATH}/${1}/manifest.yml"
 }

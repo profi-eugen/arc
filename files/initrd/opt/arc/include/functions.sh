@@ -3,6 +3,7 @@
 . "${ARC_PATH}/include/consts.sh"
 . "${ARC_PATH}/include/configFile.sh"
 . "${ARC_PATH}/include/addons.sh"
+. "${ARC_PATH}/include/modules.sh"
 
 ###############################################################################
 # Check loader disk
@@ -11,21 +12,79 @@ function checkBootLoader() {
     [ -z "${KNAME}" ] && continue
     [ "${RO}" = "0" ] && continue
     hdparm -r0 "${KNAME}" >/dev/null 2>&1 || true
-  done <<<$(lsblk -pno KNAME,RO 2>/dev/null)
+  done < <(lsblk -pno KNAME,RO 2>/dev/null)
   [ ! -w "${PART1_PATH}" ] && return 1
   [ ! -w "${PART2_PATH}" ] && return 1
   [ ! -w "${PART3_PATH}" ] && return 1
-  command -v awk >/dev/null 2>&1 || return 1
-  command -v cut >/dev/null 2>&1 || return 1
-  command -v sed >/dev/null 2>&1 || return 1
-  command -v tar >/dev/null 2>&1 || return 1
+  type -p awk >/dev/null || return 1
+  type -p cut >/dev/null || return 1
+  type -p sed >/dev/null || return 1
+  type -p tar >/dev/null || return 1
   return 0
+}
+
+###############################################################################
+# Check boot mode
+function arc_mode() {
+  if grep -q 'automated_arc' /proc/cmdline; then
+    ARC_MODE="automated"
+  elif grep -q 'update_arc' /proc/cmdline; then
+    ARC_MODE="update"
+  elif grep -q 'force_arc' /proc/cmdline; then
+    ARC_MODE="config"
+  elif grep -q "force_junior" /proc/cmdline; then
+    ARC_MODE="reinstall"
+  elif grep -q "recovery" /proc/cmdline; then
+    ARC_MODE="recovery"
+  else
+    ARC_MODE="dsm"
+  fi
+}
+
+###############################################################################
+# Check for NIC and IP
+function checkNIC() {
+  IPCON=""
+  local BOOTIPWAIT="$(readConfigKey "bootipwait" "${USER_CONFIG_FILE}")"
+  [ -z "${BOOTIPWAIT}" ] && BOOTIPWAIT="20"
+  ETHX="$(find /sys/class/net/ -mindepth 1 -maxdepth 1 -name 'eth*' -exec basename {} \; | sort)"
+  for N in ${ETHX}; do
+    COUNT=0
+    DRIVER="$(ls -ld /sys/class/net/${N}/device/driver 2>/dev/null | awk -F '/' '{print $NF}')"
+    while true; do
+      if [ "0" = "$(cat /sys/class/net/${N}/carrier 2>/dev/null)" ]; then
+        echo -e "\r${DRIVER}: \033[1;37mNOT CONNECTED\033[0m"
+        break
+      fi
+      if [ -z "$(cat /sys/class/net/${N}/carrier 2>/dev/null)" ]; then
+        echo -e "\r${DRIVER}: \033[1;37mDOWN\033[0m"
+        break
+      fi
+      if [ "${COUNT}" -ge "${BOOTIPWAIT}" ]; then
+        echo -e "\r${DRIVER}: \033[1;37mTIMEOUT\033[0m"
+        break
+      fi
+      COUNT=$((COUNT + 1))
+      IP="$(getIP "${N}")"
+      if [ -n "${IP}" ]; then
+        SPEED="$(/usr/sbin/ethtool ${N} 2>/dev/null | grep "Speed:" | awk '{print $2}')"
+        if echo "${IP}" | grep -q "^169\.254\."; then
+          echo -e "\r${DRIVER} (${SPEED}): \033[1;37mLINK LOCAL (No DHCP server found.)\033[0m"
+        else
+          echo -e "\r${DRIVER} (${SPEED}): \033[1;37m${IP}\033[0m"
+          [ -z "${IPCON}" ] && IPCON="${IP}"
+        fi
+        break
+      fi
+      sleep 1
+    done
+  done
 }
 
 ###############################################################################
 # Just show error message and dies
 function die() {
-  echo -e "\033[1;41m$@\033[0m"
+  echo -e "\033[1;41m${*}\033[0m"
   exit 1
 }
 
@@ -57,128 +116,6 @@ function arrayExistItem() {
 }
 
 ###############################################################################
-# Generate a number with 6 digits from 1 to 30000
-function random() {
-  printf "%06d" $((${RANDOM} % 30000 + 1))
-}
-
-###############################################################################
-# Generate a hexa number from 0x00 to 0xFF
-function randomhex() {
-  printf "&02X" "$((${RANDOM} % 255 + 1))"
-}
-
-###############################################################################
-# Generate a random letter
-function genRandomLetter() {
-  for i in A B C D E F G H J K L M N P Q R S T V W X Y Z; do
-    echo ${i}
-  done | sort -R | tail -1
-}
-
-###############################################################################
-# Generate a random digit (0-9A-Z)
-function genRandomValue() {
-  for i in 0 1 2 3 4 5 6 7 8 9 A B C D E F G H J K L M N P Q R S T V W X Y Z; do
-    echo ${i}
-  done | sort -R | tail -1
-}
-
-###############################################################################
-# Generate a random serial number for a model
-# 1 - Model
-# 2 - Arc
-# Returns serial number
-function generateSerial() {
-  PREFIX="$(readConfigArray "${1}.prefix" "${S_FILE}" 2>/dev/null | sort -R | tail -1)"
-  MIDDLE="$(readConfigArray "${1}.middle" "${S_FILE}" 2>/dev/null | sort -R | tail -1)"
-  if [ "${2}" = "true" ]; then
-    SUFFIX="arc"
-  else
-    SUFFIX="$(readConfigKey "${1}.suffix" "${S_FILE}" 2>/dev/null)"
-  fi
-
-  local SERIAL="${PREFIX:-"0000"}${MIDDLE:-"XXX"}"
-  case "${SUFFIX:-"alpha"}" in
-    numeric)
-      SERIAL+="$(random)"
-      ;;
-    alpha)
-      SERIAL+="$(genRandomLetter)$(genRandomValue)$(genRandomValue)$(genRandomValue)$(genRandomValue)$(genRandomValue)"
-      ;;
-    arc)
-      SERIAL+="$(readConfigKey "${1}.serial" "${S_FILE}" 2>/dev/null)"
-      ;;
-  esac
-
-  SERIAL="$(echo "${SERIAL}" | tr '[:lower:]' '[:upper:]')"
-  echo "${SERIAL}"
-  return 0
-}
-
-###############################################################################
-# Generate a MAC address for a model
-# 1 - Model
-# 2 - Amount of MACs to generate
-# 3 - Arc MAC
-# Returns serial number
-function generateMacAddress() {
-  MACPRE="$(readConfigKey "${1}.macpre" "${S_FILE}")"
-  if [ "${3}" = "true" ]; then
-    MACSUF="$(readConfigKey "${1}.mac" "${S_FILE}" 2>/dev/null)"
-  else
-    MACSUF="$(printf '%02x%02x%02x' $((${RANDOM} % 256)) $((${RANDOM} % 256)) $((${RANDOM} % 256)))"
-  fi
-  NUM=${2:-1}
-  local MACS=""
-  for I in $(seq 1 ${NUM}); do
-    MACS+="$(printf '%06x%06x' $((0x${MACPRE:-"001132"})) $(($((0x${MACSUF})) + ${I})))"
-    [ ${I} -lt ${NUM} ] && MACS+=" "
-  done
-
-  MACS="$(echo "${MACS}" | tr '[:upper:]' '[:lower:]')"
-  echo "${MACS}"
-  return 0
-}
-
-###############################################################################
-# Validate a serial number for a model
-# 1 - Model
-# 2 - Serial number to test
-# Returns 1 if serial number is invalid
-function validateSerial() {
-  PREFIX="$(readConfigArray "${1}.prefix" "${S_FILE}" 2>/dev/null)"
-  MIDDLE="$(readConfigArray "${1}.middle" "${S_FILE}" 2>/dev/null)"
-  SUFFIX="$(readConfigKey "${1}.suffix" "${S_FILE}" 2>/dev/null)"
-  P=${2:0:4}
-  M=${2:4:3}
-  S=${2:7}
-  L=${#2}
-  if [ ${L} -ne 13 ]; then
-    return 1
-  fi
-  if ! arrayExistItem ${P} ${PREFIX}; then
-    return 1
-  fi
-  if ! arrayExistItem ${M} ${MIDDLE}; then
-    return 1
-  fi
-  case "${SUFFIX:-"alpha"}" in
-    numeric)
-      if ! echo "${S}" | grep -q "^[0-9]\{6\}$"; then
-        return 1
-      fi
-      ;;
-    alpha)
-      if ! echo "${S}" | grep -q "^[A-Z][0-9][0-9][0-9][0-9][A-Z]$"; then
-        return 1
-      fi
-      ;;
-  esac
-  return 0
-}
-
-###############################################################################
 # Check if a item exists into array
 # 1 - Item
 # 2.. - Array
@@ -197,65 +134,78 @@ function arrayExistItem() {
 
 ###############################################################################
 # Get values in .conf K=V file
-# 1 - key
-# 2 - file
+# 1 - file
+# 2 - key
 function _get_conf_kv() {
-  grep "${1}" "${2}" | sed "s|^${1}=\"\(.*\)\"$|\1|g"
+  grep "^${2}=" "${1}" 2>/dev/null | cut -d'=' -f2- | sed 's/^"//;s/"$//' 2>/dev/null
+  return $?
 }
 
 ###############################################################################
 # Replace/remove/add values in .conf K=V file
-# 1 - name
-# 2 - new_val
-# 3 - path
+# 1 - file
+# 2 - key
+# 3 - value
 function _set_conf_kv() {
   # Delete
-  if [ -z "${2}" ]; then
-    sed -i "${3}" -e "s/^${1}=.*$//"
-    return $?;
+  if [ -z "${3}" ]; then
+    sed -i "/^${2}=/d" "${1}" 2>/dev/null
+    return $?
   fi
 
   # Replace
-  if grep -q "^${1}=" "${3}"; then
-    sed -i "${3}" -e "s\"^${1}=.*\"${1}=\\\"${2}\\\"\""
+  if grep -q "^${2}=" "${1}" 2>/dev/null; then
+    sed -i "s#^${2}=.*#${2}=\"${3}\"#" "${1}" 2>/dev/null
     return $?
   fi
 
   # Add if doesn't exist
-  echo "${1}=\"${2}\"" >>"${3}"
+  mkdir -p "$(dirname "${1}" 2>/dev/null)" 2>/dev/null
+  echo "${2}=\"${3}\"" >>"${1}" 2>/dev/null
+  return $?
 }
 
 ###############################################################################
-# sort netif busid
+# sort netif name
+# @1 -mac1,mac2,mac3...
 function _sort_netif() {
-  local ETHLIST=""
-  local ETHX=$(ls /sys/class/net/ 2>/dev/null | grep eth) || true
-  for N in ${ETHX}; do
-    local MAC="$(cat /sys/class/net/${N}/address 2>/dev/null | sed 's/://g; s/.*/\L&/')"
-    local BUS="$(ethtool -i ${N} 2>/dev/null | grep bus-info | cut -d' ' -f2)"
-    ETHLIST="${ETHLIST}${BUS} ${MAC} ${N}\n"
+  ETHLIST=""
+  for F in /sys/class/net/eth*; do
+    [ ! -e "${F}" ] && continue
+    local ETH MAC BUS
+    ETH="$(basename "${F}")"
+    MAC="$(cat "/sys/class/net/${ETH}/address" 2>/dev/null | sed 's/://g; s/.*/\L&/')"
+    BUS="$(ethtool -i "${ETH}" 2>/dev/null | grep bus-info | cut -d' ' -f2)"
+    ETHLIST="${ETHLIST}${BUS} ${MAC} ${ETH}\n"
   done
-  local ETHLISTTMPB="$(echo -e "${ETHLIST}" | sort)"
-  local ETHLIST="$(echo -e "${ETHLISTTMPB}" | grep -v '^$')"
-  local ETHSEQ="$(echo -e "${ETHLIST}" | awk '{print $3}' | sed 's/eth//g')"
-  local ETHNUM="$(echo -e "${ETHLIST}" | wc -l)"
+  ETHLISTTMPM=""
+  ETHLISTTMPB="$(echo -e "${ETHLIST}" | sort)"
+  if [ -n "${1}" ]; then
+    MACS="$(echo "${1}" | sed 's/://g; s/,/ /g; s/.*/\L&/')"
+    for MACX in ${MACS}; do
+      ETHLISTTMPM="${ETHLISTTMPM}$(echo -e "${ETHLISTTMPB}" | grep "${MACX}")\n"
+      ETHLISTTMPB="$(echo -e "${ETHLISTTMPB}" | grep -v "${MACX}")\n"
+    done
+  fi
+  ETHLIST="$(echo -e "${ETHLISTTMPM}${ETHLISTTMPB}" | grep -v '^$')"
+  ETHSEQ="$(echo -e "${ETHLIST}" | awk '{print $3}' | sed 's/eth//g')"
+  ETHNUM="$(echo -e "${ETHLIST}" | wc -l)"
 
   # sort
   if [ ! "${ETHSEQ}" = "$(seq 0 $((${ETHNUM:0} - 1)))" ]; then
     /etc/init.d/S41dhcpcd stop >/dev/null 2>&1
     /etc/init.d/S40network stop >/dev/null 2>&1
     for i in $(seq 0 $((${ETHNUM:0} - 1))); do
-      ip link set dev eth${i} name tmp${i}
+      ip link set dev "eth${i}" name "tmp${i}"
     done
     I=0
     for i in ${ETHSEQ}; do
-      ip link set dev tmp${i} name eth${I}
-      I=$((${I} + 1))
+      ip link set dev "tmp${i}" name "eth${I}"
+      I=$((I + 1))
     done
     /etc/init.d/S40network start >/dev/null 2>&1
     /etc/init.d/S41dhcpcd start >/dev/null 2>&1
   fi
-  return 0
 }
 
 ###############################################################################
@@ -263,10 +213,11 @@ function _sort_netif() {
 # 1 - device path
 function getBus() {
   local BUS=""
+  [ -f "/.dockerenv" ] && BUS="docker"
   # usb/ata(ide)/sata/sas/spi(scsi)/virtio/mmc/nvme
-  [ -z "${BUS}" ] && BUS=$(lsblk -dpno KNAME,TRAN 2>/dev/null | grep "${1} " | awk '{print $2}' | sed 's/^ata$/ide/' | sed 's/^spi$/scsi/') #Spaces are intentional
+  [ -z "${BUS}" ] && BUS=$(lsblk -dpno KNAME,TRAN 2>/dev/null | grep "${1} " | awk '{print $2}' | sed 's/^ata$/ide/' | sed 's/^spi$/scsi/')
   # usb/scsi(ide/sata/sas)/virtio/mmc/nvme/vmbus/xen(xvd)
-  [ -z "${BUS}" ] && BUS=$(lsblk -dpno KNAME,SUBSYSTEMS 2>/dev/null | grep "${1} " | awk '{print $2}' | awk -F':' '{print $(NF-1)}' | sed 's/_host//' | sed 's/^.*xen.*$/xen/') # Spaces are intentional
+  [ -z "${BUS}" ] && BUS=$(lsblk -dpno KNAME,SUBSYSTEMS 2>/dev/null | grep "${1} " | awk '{split($2,a,":"); if(length(a)>1) print a[length(a)-1]}' | sed 's/_host//' | sed 's/^.*xen.*$/xen/')
   [ -z "${BUS}" ] && BUS="unknown"
   echo "${BUS}"
   return 0
@@ -277,49 +228,23 @@ function getBus() {
 # 1 - ethN
 function getIP() {
   local IP=""
-  MACR="$(cat /sys/class/net/${1}/address 2>/dev/null | sed 's/://g')"
-  IPR="$(readConfigKey "network.${MACR}" "${USER_CONFIG_FILE}")"
-  if [ -n "${IPR}" ]; then
-    IFS='/' read -r -a IPRA <<<"${IPR}"
-    IP=${IPRA[0]}
+  if [ -n "${1}" ] && [ -d "/sys/class/net/${1}" ]; then
+    IP=$(ip addr show "${1}" scope global 2>/dev/null | grep -E "inet .* eth" | awk '{print $2}' | cut -d'/' -f1 | head -1)
+    [ -z "${IP}" ] && IP=$(ip route show dev "${1}" 2>/dev/null | sed -n 's/.* via .* src \(.*\) metric .*/\1/p' | head -1)
   else
-    if [ -n "${1}" ] && [ -d "/sys/class/net/${1}" ]; then
-      IP=$(ip route show dev ${1} 2>/dev/null | sed -n 's/.* via .* src \(.*\)  metric .*/\1/p')
-      [ -z "${IP}" ] && IP=$(ip addr show ${1} scope global 2>/dev/null | grep -E "inet .* eth" | awk '{print $2}' | cut -f1 -d'/' | head -1)
-    else
-      IP=$(ip route show 2>/dev/null | sed -n 's/.* via .* src \(.*\)  metric .*/\1/p' | head -1)
-      [ -z "${IP}" ] && IP=$(ip addr show scope global 2>/dev/null | grep -E "inet .* eth" | awk '{print $2}' | cut -f1 -d'/' | head -1)
-    fi
+    IP=$(ip addr show scope global 2>/dev/null | grep -E "inet .* eth" | awk '{print $2}' | cut -d'/' -f1 | head -1)
+    [ -z "${IP}" ] && IP=$(ip route show 2>/dev/null | sed -n 's/.* via .* src \(.*\) metric .*/\1/p' | head -1)
   fi
   echo "${IP}"
-  return 0
-}
-
-###############################################################################
-# get logo of model
-# 1 - model
-function getLogo() {
-  local MODEL="${1}"
-  rm -f "${PART3_PATH}/logo.png"
-  STATUS=$(curl -skL -m 10 -w "%{http_code}" "https://www.synology.com/api/products/getPhoto?product=${MODEL/+/%2B}&type=img_s&sort=0" -o "${PART3_PATH}/logo.png")
-  if [ $? -ne 0 -o ${STATUS:-0} -ne 200 -o ! -f "${PART3_PATH}/logo.png" ]; then
-    rm -f "${PART3_PATH}/logo.png"
-    return 1
-  fi
-  convert -rotate 180 "${PART3_PATH}/logo.png" "${PART3_PATH}/logo.png" 2>/dev/null
-  magick montage "${PART3_PATH}/logo.png" -background 'none' -tile '3x3' -geometry '350x210' "${PART3_PATH}/logo.png" 2>/dev/null
-  convert -rotate 180 "${PART3_PATH}/logo.png" "${PART3_PATH}/logo.png" 2>/dev/null
-  return 0
 }
 
 ###############################################################################
 # Find and mount the DSM root filesystem
 function findDSMRoot() {
   local DSMROOTS=""
-  [ -z "${DSMROOTS}" ] && DSMROOTS="$(mdadm --detail --scan 2>/dev/null | grep -E "name=SynologyNAS:0|name=DiskStation:0|name=SynologyNVR:0|name=BeeStation:0" | awk '{print $2}' | uniq)"
+  [ -z "${DSMROOTS}" ] && DSMROOTS="$(mdadm --detail --scan 2>/dev/null | grep -v "INACTIVE-ARRAY" | grep -E "name=SynologyNAS:0|name=DiskStation:0|name=SynologyNVR:0|name=BeeStation:0" | awk '{print $2}' | uniq)"
   [ -z "${DSMROOTS}" ] && DSMROOTS="$(lsblk -pno KNAME,PARTN,FSTYPE,FSVER,LABEL | grep -E "sd[a-z]{1,2}1" | grep -w "linux_raid_member" | grep "0.9" | awk '{print $1}')"
   echo "${DSMROOTS}"
-  return 0
 }
 
 ###############################################################################
@@ -376,16 +301,41 @@ function delCmdline() {
 }
 
 ###############################################################################
+# check CPU Intel(VT-d)/AMD(AMD-Vi)
+function checkCPU_VT_d() {
+  lsmod | grep -q msr || modprobe msr 2>/dev/null
+  if grep -q "GenuineIntel" /proc/cpuinfo 2>/dev/null; then
+    local VT_D_ENABLED=$(rdmsr 0x3a 2>/dev/null)
+    [ "$((${VT_D_ENABLED:-0x0} & 0x5))" -eq $((0x5)) ] && return 0
+  elif grep -q "AuthenticAMD" /proc/cpuinfo 2>/dev/null; then
+    local IOMMU_ENABLED=$(rdmsr 0xC0010114 2>/dev/null)
+    [ "$((${IOMMU_ENABLED:-0x0} & 0x1))" -eq $((0x1)) ] && return 0
+  else
+    return 1
+  fi
+}
+
+###############################################################################
+# check BIOS Intel(VT-d)/AMD(AMD-Vi)
+function checkBIOS_VT_d() {
+  if grep -q "GenuineIntel" /proc/cpuinfo 2>/dev/null; then
+    dmesg 2>/dev/null | grep -iq "DMAR-IR.*DRHD base" && return 0
+  elif grep -q "AuthenticAMD" /proc/cpuinfo 2>/dev/null; then
+    dmesg 2>/dev/null | grep -iq "AMD-Vi.*enabled" && return 0
+  else
+    return 1
+  fi
+}
+
+###############################################################################
 # Rebooting
-# (based on pocopico's TCRP code)
 function rebootTo() {
-  local MODES="config recovery junior automated update bios memtest"
+  local MODES="config recovery junior automated update uefi memtest"
   [ -z "${1}" ] && exit 1
-  if ! echo "${MODES}" | grep -qw "${1}"; then exit 1; fi
+  if ! echo "${MODES}" | grep -wq "${1}"; then exit 1; fi
   [ "${1}" = "automated" ] && echo "arc-${MODEL}-${PRODUCTVER}-${ARC_VERSION}" >"${PART3_PATH}/automated"
-  [ ! -f "${USER_GRUBENVFILE}" ] && grub-editenv ${USER_GRUBENVFILE} create
-  # echo -e "Rebooting to ${1} mode..."
-  grub-editenv ${USER_GRUBENVFILE} set next_entry="${1}"
+  [ ! -f "${USER_GRUBENVFILE}" ] && grub-editenv "${USER_GRUBENVFILE}" create
+  grub-editenv "${USER_GRUBENVFILE}" set next_entry="${1}"
   exec reboot
 }
 
@@ -393,9 +343,11 @@ function rebootTo() {
 # Copy DSM files to the boot partition
 # 1 - DSM root path
 function copyDSMFiles() {
-  if [ -f "${1}/grub_cksum.syno" ] && [ -f "${1}/GRUB_VER" ] && [ -f "${1}/zImage" ] && [ -f "${1}/rd.gz" ]; then
-    rm -f "${PART1_PATH}/grub_cksum.syno" "${PART1_PATH}/GRUB_VER" "${PART2_PATH}/grub_cksum.syno" "${PART2_PATH}/GRUB_VER" >/dev/null
-    rm -f "${ORI_ZIMAGE_FILE}" "${ORI_RDGZ_FILE}" >/dev/null
+  if [ -f "${1}/VERSION" ] && [ -f "${1}/grub_cksum.syno" ] && [ -f "${1}/GRUB_VER" ] && [ -f "${1}/zImage" ] && [ -f "${1}/rd.gz" ]; then
+    # Remove old model files
+    rm -f "${PART1_PATH}/grub_cksum.syno" "${PART1_PATH}/GRUB_VER" "${PART2_PATH}/grub_cksum.syno" "${PART2_PATH}/GRUB_VER"
+    rm -f "${ORI_ZIMAGE_FILE}" "${ORI_RDGZ_FILE}"
+    # Remove old build files
     rm -f "${MOD_ZIMAGE_FILE}" "${MOD_RDGZ_FILE}" >/dev/null
     # Copy new model files
     cp -f "${1}/grub_cksum.syno" "${PART1_PATH}"
@@ -411,74 +363,33 @@ function copyDSMFiles() {
 }
 
 ###############################################################################
-# Extract DSM files
-# 1 - PAT File
-# 2 - Destination Path
-function extractDSMFiles() {
-  rm -f "${LOG_FILE}"
-  PAT_PATH="${1}"
-  EXT_PATH="${2}"
-
-  header="$(od -bcN2 "${PAT_PATH}" | head -1 | awk '{print $3}')"
-  case ${header} in
-    105)
-    echo -e "Uncompressed tar"
-    isencrypted="no"
-    ;;
-    213)
-    echo -e "Compressed tar"
-    isencrypted="no"
-    ;;
-    255)
-    echo -e "Encrypted tar"
-    isencrypted="yes"
-    ;;
-    *)
-    echo -e "Could not determine if pat file is encrypted or not, maybe corrupted, try again!"
-    ;;
-  esac
-  if [ "${isencrypted}" = "yes" ]; then
-    # Uses the extractor to untar PAT file
-    LD_LIBRARY_PATH="${EXTRACTOR_PATH}" "${EXTRACTOR_PATH}/${EXTRACTOR_BIN}" "${PAT_PATH}" "${EXT_PATH}" >"${LOG_FILE}" 2>&1
-  else
-    # Untar PAT file
-    tar -xf "${PAT_PATH}" -C "${EXT_PATH}" >"${LOG_FILE}" 2>&1
-  fi
-  if [ -f "${EXT_PATH}/grub_cksum.syno" ] && [ -f "${EXT_PATH}/GRUB_VER" ] && [ -f "${EXT_PATH}/zImage" ] && [ -f "${EXT_PATH}/rd.gz" ]; then
-    rm -f "${LOG_FILE}"
-    return 0
-  else
-    return 1
-  fi
-}
-
-###############################################################################
 # Livepatch
 function livepatch() {
   PVALID="false"
   # Patch zImage
-  echo -n "Patching zImage"
+  echo -e ">> patching Kernel..."
   if ${ARC_PATH}/zimage-patch.sh; then
-    echo -e " - successful!"
+    echo -e ">> patching Kernel successful!"
     PVALID="true"
   else
-    echo -e " - failed!"
+    echo -e ">> patching Kernel failed!"
     PVALID="false"
   fi
+  echo
   if [ "${PVALID}" = "true" ]; then
     # Patch Ramdisk
-    echo -n "Patching Ramdisk"
+    echo -e ">> patching Ramdisk..."
     if ${ARC_PATH}/ramdisk-patch.sh; then
-      echo -e " - successful!"
+      echo -e ">> patching Ramdisk successful!"
       PVALID="true"
     else
-      echo -e " - failed!"
+      echo -e ">> patching Ramdisk failed!"
       PVALID="false"
     fi
   fi
+  echo
   if [ "${PVALID}" = "false" ]; then
-    echo
-    echo -e "Patching DSM Files failed! Please stay patient for Update."
+    echo -e ">> Please stay patient for Update."
     sleep 5
     exit 1
   elif [ "${PVALID}" = "true" ]; then
@@ -486,7 +397,7 @@ function livepatch() {
     writeConfigKey "zimage-hash" "${ZIMAGE_HASH}" "${USER_CONFIG_FILE}"
     RAMDISK_HASH="$(sha256sum "${ORI_RDGZ_FILE}" | awk '{print $1}')"
     writeConfigKey "ramdisk-hash" "${RAMDISK_HASH}" "${USER_CONFIG_FILE}"
-    echo "DSM Image patched - Ready!"
+    echo -e ">> DSM Image patched!"
   fi
 }
 
@@ -496,10 +407,8 @@ function onlineCheck() {
   REGION="$(curl -m 10 -v "http://ip-api.com/line?fields=timezone" 2>/dev/null | tr -d '\n' | cut -d '/' -f1)"
   TIMEZONE="$(curl -m 10 -v "http://ip-api.com/line?fields=timezone" 2>/dev/null | tr -d '\n' | cut -d '/' -f2)"
   KEYMAP="$(curl -m 10 -v "http://ip-api.com/line?fields=countryCode" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
-  if [ "${KEYMAP}" = "ua" ]; then
-    rm -rf "${PART3_PATH}" && exec poweroff
-  fi
   [ -z "${KEYMAP}" ] && KEYMAP="$(readConfigKey "keymap" "${USER_CONFIG_FILE}")"
+  [ -z "${KEYMAP}" ] && KEYMAP="us"
   if [ -n "${REGION}" ] && [ -n "${TIMEZONE}" ]; then
     writeConfigKey "time.region" "${REGION}" "${USER_CONFIG_FILE}"
     writeConfigKey "time.timezone" "${TIMEZONE}" "${USER_CONFIG_FILE}"
@@ -511,18 +420,13 @@ function onlineCheck() {
   LAYOUT="$(readConfigKey "layout" "${USER_CONFIG_FILE}")"
   if [ -z "${LAYOUT}" ]; then
     [ -n "${KEYMAP}" ] && KEYMAP="$(echo ${KEYMAP} | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]' | tr -d '[:punct:]' | tr -d '[:digit:]')"
-    if loadkeys "${KEYMAP:-us}" 2>/dev/null; then
-      writeConfigKey "keymap" "${KEYMAP}" "${USER_CONFIG_FILE}"
-    else
-      KEYMAP="us"
-      loadkeys "${KEYMAP}" 2>/dev/null
-      writeConfigKey "keymap" "${KEYMAP}" "${USER_CONFIG_FILE}"
-    fi
+    loadkeys "${KEYMAP}" 2>/dev/null
+    writeConfigKey "keymap" "${KEYMAP}" "${USER_CONFIG_FILE}"
   fi
-  [ $(echo "${ARC_VERSION}" | grep "dev" | wc -l) -eq 0 ] && NEWTAG="$(curl -m 10 -skL "https://api.github.com/repos/AuxXxilium/arc/releases" | jq -r ".[].tag_name" | grep -v "dev" | sort -rV | head -1)" || NEWTAG="$(curl -m 10 -skL "https://api.github.com/repos/AuxXxilium/arc/releases" | jq -r ".[].tag_name" | grep "dev" | sort -rV | head -1)"
+  NEWTAG="$(curl -m 10 -skL "${API_URL}" | jq -r ".[].tag_name" | grep -v "dev" | sort -rV | head -1)"
   if [ -n "${NEWTAG}" ]; then
     writeConfigKey "arc.offline" "false" "${USER_CONFIG_FILE}"
-    updateOffline
+    checkHardwareID
   else
     writeConfigKey "arc.offline" "true" "${USER_CONFIG_FILE}"
   fi
@@ -532,46 +436,46 @@ function onlineCheck() {
 # Check System
 function systemCheck () {
   # Get Loader Disk Bus
+  [ -f "/usr/arc/.mountloader" ] && . "/usr/arc/.mountloader"
   BUS=$(getBus "${LOADER_DISK}")
   [ -z "${LOADER_DISK}" ] && die "Loader Disk not found!"
-  # Memory: Check Memory installed
-  RAMTOTAL="$(awk '/MemTotal:/ {printf "%.0f\n", $2 / 1024 / 1024 + 0.5}' /proc/meminfo 2>/dev/null)"
-  [ -z "${RAMTOTAL}" ] && RAMTOTAL="8"
   # Check for Hypervisor
-  if grep -q "^flags.*hypervisor.*" /proc/cpuinfo; then
-    MACHINE="$(lscpu | grep Hypervisor | awk '{print $3}')" # KVM or VMware
-  else
-    MACHINE="Native"
-  fi
+  MEV="$(virt-what 2>/dev/null | head -1)"
+  [ -z "${MEV}" ] && MEV="physical"
   # Check for AES Support
-  if ! grep -q "^flags.*aes.*" /proc/cpuinfo; then
-    AESSYS="false"
-  else
+  if grep -q "^flags.*aes.*" /proc/cpuinfo; then
     AESSYS="true"
-  fi
-  # Check for ACPI Support
-  if ! grep -q "^flags.*acpi.*" /proc/cpuinfo; then
-    ACPISYS="false"
   else
-    ACPISYS="true"
+    AESSYS="false"
   fi
   # Check for CPU Frequency Scaling
-  CPUFREQUENCIES=$(ls -ltr /sys/devices/system/cpu/cpufreq/* 2>/dev/null | wc -l)
-  if [ ${CPUFREQUENCIES} -gt 1 ] && [ "${ACPISYS}" = "true" ]; then
+  if ls /sys/devices/system/cpu/cpufreq/*/* 1>/dev/null 2>&1; then
     CPUFREQ="true"
   else
     CPUFREQ="false"
   fi
+  # Check for CPU Count
+  CPUCNT="$(cat /sys/devices/system/cpu/cpu[0-9]*/topology/{core_cpus_list,thread_siblings_list} | sort -u | wc -l 2>/dev/null)"
+  CPUCHT="$(cat /proc/cpuinfo | grep -c 'core id' 2>/dev/null)"
   # Check for Arc Patch
-  ARCCONF="$(readConfigKey "${MODEL:-SA6400}.serial" "${S_FILE}")"
-  [ -z "${ARCCONF}" ] && writeConfigKey "arc.patch" "false" "${USER_CONFIG_FILE}"
+  ARC_PATCH="$(readConfigKey "arc.patch" "${USER_CONFIG_FILE}")"
+  KEYMAP="$(readConfigKey "keymap" "${USER_CONFIG_FILE}")"
+  arc_mode
+  getnetinfo
+  getdiskinfo
+  getmap
 }
 
 ###############################################################################
 # Generate HardwareID
 function genHWID () {
-  HWID="$(echo $(dmidecode -t 4 | grep ID | sed 's/.*ID://;s/ //g' | head -1) $(ifconfig | grep eth | awk '{print $NF}' | sed 's/://g' | sort | head -1) | sha256sum | awk '{print $1}' | cut -c1-16)" 2>/dev/null
-  echo "${HWID}"
+  CPU_ID="$(dmidecode -t 4 | grep ID | sed 's/.*ID://;s/ //g' | head -1)"
+  NIC_MACS=$(find /sys/class/net/ -mindepth 1 -maxdepth 1 -name 'eth*' -exec basename {} \; | sort | while read NIC; do
+    MAC=$(cat "/sys/class/net/${NIC}/address" 2>/dev/null | sed 's/://g')
+    echo "${MAC}"
+  done | sort)
+  NIC_MAC="$(echo "${NIC_MACS}" | head -1)"
+  echo "${CPU_ID} ${NIC_MAC}" | sha256sum | awk '{print $1}' | cut -c1-16
 }
 
 ###############################################################################
@@ -589,40 +493,25 @@ function check_port() {
 }
 
 ###############################################################################
-# Unmount disks
-function __umountNewBlDisk() {
-  umount "${TMP_PATH}/sdX1" 2>/dev/null
-  umount "${TMP_PATH}/sdX2" 2>/dev/null
-  umount "${TMP_PATH}/sdX3" 2>/dev/null
-}
-
-function __umountDSMRootDisk() {
-  umount "${TMP_PATH}/mdX"
-  rm -rf "${TMP_PATH}/mdX"
-}
-
-###############################################################################
 # bootwait SSH/Web
 function _bootwait() {
-  # Exec Bootwait to check SSH/Web connection
-  BOOTWAIT=5
+  BOOTWAIT="$(readConfigKey "bootwait" "${USER_CONFIG_FILE}")"
+  [ -z "${BOOTWAIT}" ] && BOOTWAIT="5"
   busybox w 2>/dev/null | awk '{print $1" "$2" "$4" "$5" "$6}' >WB
   MSG=""
-  while test ${BOOTWAIT} -ge 0; do
-    MSG="\033[1;33mAccess to SSH/Web will interrupt boot...\033[0m"
+  while [ "${BOOTWAIT}" -gt 0 ]; do
+    sleep 1
+    BOOTWAIT=$((BOOTWAIT - 1))
     echo -en "\r${MSG}"
     busybox w 2>/dev/null | awk '{print $1" "$2" "$4" "$5" "$6}' >WC
     if ! diff WB WC >/dev/null 2>&1; then
-      echo -en "\r\033[1;33mAccess to SSH/Web detected and boot is interrupted.\033[0m\n"
+      echo -en "\r\033[1;33mAccess to SSH/Web detected and boot is interrupted. Rebooting to config...\033[0m\n"
       rm -f WB WC
-      exit 0
+      sleep 5
+      rebootTo "config"
     fi
-    sleep 1
-    BOOTWAIT=$((BOOTWAIT - 1))
   done
   rm -f WB WC
-  echo -en "\r$(printf "%$((${#MSG} * 2))s" " ")\n"
-  return 0
 }
 
 ###############################################################################
@@ -632,6 +521,174 @@ function fixDSMRootPart() {
   if mdadm --detail "${1}" 2>/dev/null | grep -i "State" | grep -iEq "active|FAILED|Not Started"; then
     mdadm --stop "${1}" >/dev/null 2>&1
     mdadm --assemble --scan >/dev/null 2>&1
-    fsck "${1}" >/dev/null 2>&1
+    T="$(blkid -o value -s TYPE "${1}" 2>/dev/null | sed 's/linux_raid_member/ext4/')"
+    if [ "${T}" = "btrfs" ]; then
+      btrfs check --readonly "${1}" >/dev/null 2>&1
+    else
+      fsck "${1}" >/dev/null 2>&1
+    fi
   fi
+}
+
+###############################################################################
+# Read Data
+function readData() {
+  # Get DSM Data from Config
+  MODEL="$(readConfigKey "model" "${USER_CONFIG_FILE}")"
+  LKM="$(readConfigKey "lkm" "${USER_CONFIG_FILE}")"
+  if [ -n "${MODEL}" ]; then
+    PLATFORM="$(readConfigKey "platform" "${USER_CONFIG_FILE}")"
+    DT="$(readConfigKey "platforms.${PLATFORM}.dt" "${P_FILE}")"
+    PRODUCTVER="$(readConfigKey "productver" "${USER_CONFIG_FILE}")"
+    KVER="$(readConfigKey "platforms.${PLATFORM}.productvers.\"${PRODUCTVER}\".kver" "${P_FILE}")"
+  fi
+
+  # Get Arc Data from Config
+  ARC_PATCH="$(readConfigKey "arc.patch" "${USER_CONFIG_FILE}")"
+  HARDWAREID="$(genHWID)"
+  USERID="$(readConfigKey "arc.userid" "${USER_CONFIG_FILE}")"
+  EXTERNALCONTROLLER="$(readConfigKey "device.externalcontroller" "${USER_CONFIG_FILE}")"
+  SATACONTROLLER="$(readConfigKey "device.satacontroller" "${USER_CONFIG_FILE}")"
+  SASCONTROLLER="$(readConfigKey "device.sascontroller" "${USER_CONFIG_FILE}")"
+  SCSICONTROLLER="$(readConfigKey "device.scsicontroller" "${USER_CONFIG_FILE}")"
+  RAIDCONTROLLER="$(readConfigKey "device.raidcontroller" "${USER_CONFIG_FILE}")"
+  NVMECONTROLLER="$(readConfigKey "device.nvmecontroller" "${USER_CONFIG_FILE}")"
+  MMCCONTROLLER="$(readConfigKey "device.mmccontroller" "${USER_CONFIG_FILE}")"
+  USBCONTROLLER="$(readConfigKey "device.usbcontroller" "${USER_CONFIG_FILE}")"
+
+  # Advanced Config
+  ALTCONSOLE="$(readConfigKey "arc.altconsole" "${USER_CONFIG_FILE}")"
+  ARC_OFFLINE="$(readConfigKey "arc.offline" "${USER_CONFIG_FILE}")"
+  BOOTIPWAIT="$(readConfigKey "bootipwait" "${USER_CONFIG_FILE}")"
+  DIRECTBOOT="$(readConfigKey "directboot" "${USER_CONFIG_FILE}")"
+  EMMCBOOT="$(readConfigKey "emmcboot" "${USER_CONFIG_FILE}")"
+  HDDSORT="$(readConfigKey "hddsort" "${USER_CONFIG_FILE}")"
+  USBMOUNT="$(readConfigKey "usbmount" "${USER_CONFIG_FILE}")"
+  KERNEL="$(readConfigKey "kernel" "${USER_CONFIG_FILE}")"
+  KERNELLOAD="$(readConfigKey "kernelload" "${USER_CONFIG_FILE}")"
+  KERNELPANIC="$(readConfigKey "kernelpanic" "${USER_CONFIG_FILE}")"
+  GOVERNOR="$(readConfigKey "governor" "${USER_CONFIG_FILE}")"
+  STORAGEPANEL="$(readConfigKey "addons.storagepanel" "${USER_CONFIG_FILE}")"
+  ODP="$(readConfigKey "odp" "${USER_CONFIG_FILE}")"
+  RD_COMPRESSED="$(readConfigKey "rd-compressed" "${USER_CONFIG_FILE}")"
+  SATADOM="$(readConfigKey "satadom" "${USER_CONFIG_FILE}")"
+  REMAP="$(readConfigKey "arc.remap" "${USER_CONFIG_FILE}")"
+
+  # Get Config/Build Status
+  CONFDONE="$(readConfigKey "arc.confdone" "${USER_CONFIG_FILE}")"
+  [ "${CONFDONE}" = "false" ] && writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
+  BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
+
+  # Development Mode
+  DEVELOPMENT_MODE="$(readConfigKey "arc.dev" "${USER_CONFIG_FILE}")"
+
+  # Remote Assistance
+  REMOTEASSISTANCE="$(readConfigKey "arc.remoteassistance" "${USER_CONFIG_FILE}")"
+  if [ "${ARC_MODE}" = "config" ] && [ "${REMOTEASSISTANCE}" = "true" ] && [ ! -f "${TMP_PATH}/remote.lock" ]; then
+    remoteAssistance
+  fi
+}
+
+###############################################################################
+# Menu functions
+function write_menu() {
+  echo "$1 \"$2\" " >>"${TMP_PATH}/menu"
+}
+    
+function write_menu_value() {
+  echo "$1 \"$2: \Z4${3:-none}\Zn\" " >>"${TMP_PATH}/menu"
+}
+
+################################################################################
+# Function to check if a value exists in an array
+function is_in_array() {
+  local V="$1"
+  shift
+  local A=("$@")
+  for I in "${A[@]}"; do
+    if [[ "$I" == "$V" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+###############################################################################
+# Send a webhook notification
+# 1 - webhook url
+# 2 - message (optional)
+function sendWebhook() {
+  local URL="${1}"
+  local MSGT="${ARC_TITLE}"
+  local MSGC="${2:-"test at $(date +'%Y-%m-%d %H:%M:%S')"}"
+
+  [ -z "${URL}" ] && return 1
+
+  curl -skL -X POST -H "Content-Type: application/json" -d "{\"title\":\"${MSGT}\", \"text\":\"${MSGC}\"}" "${URL}" >/dev/null 2>&1
+  return $?
+}
+
+###############################################################################
+# Send a discord notification
+# 1 - userid
+# 2 - message (optional)
+function sendDiscord() {
+  local USERID="${1}"
+  local MSGT="${ARC_TITLE}"
+  local MSGC="${2:-"test at $(date +'%Y-%m-%d %H:%M:%S')"}"
+  [ -z "${USERID}" ] && return 1
+
+  local MESSAGE="**${MSGT}**: ${MSGC}"
+  local ENCODED_MSG=$(echo "${MESSAGE}" | jq -sRr @uri)
+  curl -skL "https://arc.auxxxilium.tech/notify.php?id=${USERID}&message=${ENCODED_MSG}" >/dev/null 2>&1
+  return $?
+}
+
+###############################################################################
+# Get Board Name
+function getBoardName() {
+  local b v
+  if [ -r /sys/class/dmi/id/product_name ]; then
+    b="$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)"
+    b="$(echo "${b}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  fi
+  if [ -z "${b}" ] || echo "${b}" | grep -Eq "O\.E\.M\.|System|To Be Filled By O\.E\.M\."; then
+    if [ -r /sys/class/dmi/id/board_name ]; then
+      b="$(cat /sys/class/dmi/id/board_name 2>/dev/null || true)"
+      b="$(echo "${b}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    fi
+  fi
+  if [ -r /sys/class/dmi/id/sys_vendor ]; then
+    v="$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || true)"
+    v="$(echo "${v}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  fi
+  if [ -z "${v}" ] || echo "${v}" | grep -Eq "O\.E\.M\.|System|To Be Filled By O\.E\.M\."; then
+    if [ -r /sys/class/dmi/id/board_vendor ]; then
+      v="$(cat /sys/class/dmi/id/board_vendor 2>/dev/null || true)"
+      v="$(echo "${v}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    fi
+  fi
+  if [ -n "${v}" ] && [ -n "${b}" ]; then
+    BOARD="${v} ${b}"
+  elif [ -n "${v}" ]; then
+    BOARD="${v}"
+  elif [ -n "${b}" ]; then
+    BOARD="${b}"
+  else
+    BOARD="not available"
+  fi
+  echo "${BOARD}"
+}
+
+###############################################################################
+# Reset build
+function resetBuild() {
+  writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
+  BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
+  rm -f "${MOD_ZIMAGE_FILE}" "${MOD_RDGZ_FILE}" >/dev/null 2>&1 || true
+}
+
+function resetBuildstatus() {
+  writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
+  BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
 }

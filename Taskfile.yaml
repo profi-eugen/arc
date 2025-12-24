@@ -3,18 +3,18 @@
 version: "3"
 
 tasks:
-  build-img-n:
+  build-evo:
     cmds:
+      - git reset --hard
       - git pull
-      - ./img-gen-n.sh
-
-  build-img-s:
+      - ./img-gen.sh evo
+  build:
     cmds:
+      - git reset --hard
       - git pull
-      - ./img-gen-s.sh
-
-  compile-kpatch:
-    dir: kpatch
+      - ./img-gen.sh essential
+  build-local:
     cmds:
-      - make clean all
-      - mv kpatch ../files/p3/system/
+      - git reset --hard
+      - git pull
+      - ./img-gen.sh local
