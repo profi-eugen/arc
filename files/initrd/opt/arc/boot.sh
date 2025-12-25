@@ -82,6 +82,7 @@ if [ "${BUILDDONE}" = "false" ]; then
 fi
 
 # Show Loader Info
+echo
 DSMINFO="$(readConfigKey "bootscreen.dsminfo" "${USER_CONFIG_FILE}")"
 SYSTEMINFO="$(readConfigKey "bootscreen.systeminfo" "${USER_CONFIG_FILE}")"
 DISKINFO="$(readConfigKey "bootscreen.diskinfo" "${USER_CONFIG_FILE}")"
@@ -122,7 +123,7 @@ fi
 if readConfigMap "addons" "${USER_CONFIG_FILE}" | grep -q nvmesystem; then
   [ -z "$(ls /dev/nvme* | grep -vE "${LOADER_DISK}[0-9]?$" 2>/dev/null)" ] && printf "\033[1;33m*** %s ***\033[0m\n" "Notice: Please insert at least one m.2 disk for system installation."
 else
-  if [ -z "$(ls /dev/sd* /dev/sg* | grep -vE "${LOADER_DISK}[0-9]?$" 2>/dev/null)" ]; then
+  if [ -z "$(ls /dev/sd* /dev/sg* 2>/dev/null | grep -vE "${LOADER_DISK}[0-9]?$")" ]; then
     printf "\033[1;33m*** %s ***\033[0m\n" "Notice: Please insert at least one SATA, SAS, or SCSI disk for system installation."
   fi
 fi
@@ -197,8 +198,6 @@ elif [ -n "${KVER}" ] && [ "${KVER:0:1}" -lt "5" ]; then
     CMDLINE['dom_szmax']="${SIZE}"
   fi
   CMDLINE['elevator']="elevator"
-else
-  CMDLINE['split_lock_detect']="off"
 fi
 
 if [ "${DT}" = "true" ]; then
@@ -210,6 +209,7 @@ else
   CMDLINE['syno_hdd_powerup_seq']="0"
 fi
 
+CMDLINE['split_lock_detect']="off"
 CMDLINE['HddHotplug']="1"
 CMDLINE['vender_format_version']="2"
 CMDLINE['skip_vender_mac_interfaces']="0,1,2,3,4,5,6,7"
@@ -315,14 +315,6 @@ else
   IPCON=""
   checkNIC || true
   echo
-
-  DSMLOGO="$(readConfigKey "bootscreen.dsmlogo" "${USER_CONFIG_FILE}")"
-  if [ "${DSMLOGO}" = "true" ] && [ -c "/dev/fb0" ]; then
-    [[ "${IPCON}" =~ ^169\.254\..* ]] && IPCON=""
-    [ -n "${IPCON}" ] && URL="http://${IPCON}:5000" || URL="http://find.synology.com/"
-    python3 "${ARC_PATH}/include/functions.py" "makeqr" -d "${URL}" -l "6" -o "${TMP_PATH}/qrcode_boot.png"
-    [ -f "${TMP_PATH}/qrcode_boot.png" ] && echo | fbv -acufi "${TMP_PATH}/qrcode_boot.png" >/dev/null 2>/dev/null || true
-  fi
 
   # Executes DSM kernel via KEXEC
   kexec -a -l "${MOD_ZIMAGE_FILE}" --initrd "${MOD_RDGZ_FILE}" --command-line="${CMDLINE_LINE} kexecboot" >"${LOG_FILE}" 2>&1 || die "Failed to load DSM Kernel!"

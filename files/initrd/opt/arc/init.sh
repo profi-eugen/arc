@@ -178,9 +178,10 @@ case "${ARC_MODE}" in
     echo -e "\033[1;34mStarting Update Mode...\033[0m"
     ;;
   dsm|reinstall|recovery)
-    if [ "${BUILDDONE}" = "true" ]; then
+    if [ "${BUILDDONE}" = "true" ] && [ -f "${MOD_ZIMAGE_FILE}" ] && [ -f "${MOD_RDGZ_FILE}" ]; then
       echo -e "\033[1;34mStarting DSM Mode...\033[0m"
-      boot.sh && exit 0
+      boot.sh
+      exit 0
     else
       echo -e "\033[1;34mRebooting to Config Mode...\033[0m"
       rebootTo "config" || die "Reboot to Config Mode failed!"
@@ -214,6 +215,17 @@ mkdir -p "${MODULES_PATH}"
 mkdir -p "${PATCH_PATH}"
 mkdir -p "${USER_UP_PATH}"
 
+if [ -d "${MODULES_PATH}/" ]; then
+  while IFS= read -r -d '' MSRC; do
+    MSRCB="$(basename "$MSRC")"
+    MTARB="${MSRCB/-7.2-/-7.3-}"
+    MTAR="${MODULES_PATH}/${MTARB}"
+    if [ "$MTAR" != "$MSRC" ] && [ ! -e "$MTAR" ]; then
+      ln -sf "$MSRC" "$MTAR" || true
+    fi
+  done < <(find "${MODULES_PATH}" -maxdepth 1 -type f -name '*-7.2-*.tgz' -print0)
+fi
+
 DEVELOPMENT_MODE="$(readConfigKey "arc.dev" "${USER_CONFIG_FILE}")"
 if [ "${DEVELOPMENT_MODE}" = "true" ]; then
   echo -e "\033[1;34mDevelopment Mode is enabled.\033[0m"
@@ -222,12 +234,6 @@ if [ "${DEVELOPMENT_MODE}" = "true" ]; then
   cp -rf /tmp/arc-dev/files/initrd/opt/arc /opt 2>/dev/null || true
   rm -rf /tmp/arc-dev /tmp/arc-dev.zip
 fi
-
-# Load Arc Overlay
-echo -e "\033[1;34mLoading Arc Overlay...\033[0m"
-echo
-echo -e "Use \033[1;34mDisplay Output\033[0m or \033[1;34mhttp://${IPCON}:${HTTPPORT:-7080}\033[0m to configure Loader."
-echo
 
 # Notification System
 WEBHOOKNOTIFY="$(readConfigKey "arc.webhooknotify" "${USER_CONFIG_FILE}")"
@@ -246,6 +252,12 @@ if [ "${DISCORDNOTIFY}" = "true" ]; then
     echo
   fi
 fi
+
+# Load Arc Overlay
+echo -e "\033[1;34mLoading Arc Overlay...\033[0m"
+echo
+echo -e "Use \033[1;34mDisplay Output\033[0m or \033[1;34mhttp://${IPCON}:${HTTPPORT:-7080}\033[0m to configure Loader."
+echo
 
 # Check memory and load Arc
 RAM=$(awk '/MemTotal:/ {printf "%.0f", $2 / 1024}' /proc/meminfo 2>/dev/null)

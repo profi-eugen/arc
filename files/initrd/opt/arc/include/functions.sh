@@ -32,12 +32,14 @@ function arc_mode() {
     ARC_MODE="update"
   elif grep -q 'force_arc' /proc/cmdline; then
     ARC_MODE="config"
-  elif grep -q "force_junior" /proc/cmdline; then
+  elif grep -q 'force_junior' /proc/cmdline; then
     ARC_MODE="reinstall"
-  elif grep -q "recovery" /proc/cmdline; then
+  elif grep -q 'recovery' /proc/cmdline; then
     ARC_MODE="recovery"
-  else
+  elif grep -q 'dsm_arc' /proc/cmdline; then
     ARC_MODE="dsm"
+  else
+    ARC_MODE="config"
   fi
 }
 
