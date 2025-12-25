@@ -4,6 +4,8 @@
 
 . "${ARC_PATH}/include/functions.sh"
 
+arc_mode
+
 set -o pipefail # Get exit code from process piped
 
 # Sanity check

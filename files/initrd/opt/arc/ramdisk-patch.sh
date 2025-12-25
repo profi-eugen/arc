@@ -12,6 +12,8 @@
 . "${ARC_PATH}/include/addons.sh"
 . "${ARC_PATH}/include/modules.sh"
 
+arc_mode
+
 set -o pipefail # Get exit code from process piped
 
 # Read Model Data
